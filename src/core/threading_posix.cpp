@@ -14,6 +14,7 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <signal.h>
 
 #include <atomic>
+#include <fmt/format.h>
 #include <array>
 #include <cerrno>
 #include <cstddef>
@@ -470,6 +471,9 @@ class PosixConditionBase {
     return const_cast<std::condition_variable&>(cond_).native_handle();
   }
 
+  // Host state for hang diagnostics; never blocks on the object's mutex.
+  virtual std::string DebugState() const { return std::string(); }
+
  protected:
   inline virtual bool signaled() const = 0;
   inline virtual void post_execution() = 0;
@@ -529,6 +533,13 @@ class PosixCondition<Event> : public PosixConditionBase {
   void Reset() {
     auto lock = std::unique_lock<std::mutex>(mutex_);
     signal_ = false;
+  }
+
+  std::string DebugState() const override {
+    std::unique_lock<std::mutex> lock(const_cast<std::mutex&>(mutex_), std::try_to_lock);
+    return fmt::format("event {} signaled={} waiters={} releases={} eligible={}{}",
+                       manual_reset_ ? "manual" : "auto", signal_, waiters_, release_count_,
+                       eligible_waiters_, lock.owns_lock() ? "" : " (mutex busy)");
   }
 
  private:
@@ -606,6 +617,12 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
     return true;
   }
 
+  std::string DebugState() const override {
+    std::unique_lock<std::mutex> lock(const_cast<std::mutex&>(mutex_), std::try_to_lock);
+    return fmt::format("semaphore count={} max={}{}", count_, maximum_count_,
+                       lock.owns_lock() ? "" : " (mutex busy)");
+  }
+
  private:
   inline bool signaled() const override { return count_ > 0; }
   inline void post_execution() override {
@@ -650,9 +667,18 @@ class PosixCondition<Mutant> : public PosixConditionBase {
   inline void post_execution() override {
     count_++;
     owner_ = std::this_thread::get_id();
+    owner_system_id_ = current_thread_system_id();
   }
   uint32_t count_;
   std::thread::id owner_;
+  uint32_t owner_system_id_ = 0;
+
+ public:
+  std::string DebugState() const override {
+    std::unique_lock<std::mutex> lock(const_cast<std::mutex&>(mutex_), std::try_to_lock);
+    return fmt::format("mutant count={} owner_thread={}{}", count_, count_ ? owner_system_id_ : 0,
+                       lock.owns_lock() ? "" : " (mutex busy)");
+  }
 };
 
 template <>
@@ -1259,6 +1285,7 @@ class PosixConditionHandle : public T, public PosixWaitHandle {
 
   PosixCondition<T>& condition() override { return handle_; }
   void* native_handle() const override { return handle_.native_handle(); }
+  std::string debug_state() const override { return handle_.DebugState(); }
 
  protected:
   PosixCondition<T> handle_;
