@@ -4118,6 +4118,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       render_target_cache_->last_update_render_pass(),
       render_target_cache_->last_update_framebuffer());
+  shared_memory_->NoteDrawReadsInOpenPass();
 
   // Draw.
   if (primitive_processing_result.index_buffer_type ==
